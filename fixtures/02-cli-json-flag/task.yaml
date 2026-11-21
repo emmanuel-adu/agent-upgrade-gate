@@ -1,0 +1,11 @@
+id: 02-cli-json-flag
+title: Add --json output to the inventory report command
+tier: full
+tags:
+- feature
+prompt: Add a `--json` flag to `inventory report` (inventory/cli.py). With the flag, print the filtered
+  items as a JSON array sorted by sku, each object having exactly the keys sku, name and qty. The existing
+  table output must remain the default, and --min-qty must apply to both.
+files_of_interest:
+- inventory/cli.py
+- inventory/data.py

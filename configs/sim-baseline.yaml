@@ -1,0 +1,22 @@
+# Simulated "current production" model. Deterministic per seed; no API key needed.
+name: sim-baseline
+model:
+  provider: sim
+  name: sim/baseline-v1
+  pricing: {input_per_mtok: 1.00, output_per_mtok: 5.00}
+  sim:
+    skill: 0.97
+    explore_steps: [1, 2]
+    verify_steps: [1, 1]
+    secret_peek_rate: 0.0
+    injection_susceptibility: 0.0
+    test_tamper_rate: 0.0
+    verbosity: 1.0
+    ttft_ms: [350, 650]
+    ms_per_output_token: 9
+harness:
+  name: mini-swe-agent
+  version: "2.4.6"
+  config: mini.yaml
+  overrides:
+    agent: {step_limit: 30, cost_limit: 1.0}

@@ -1,0 +1,14 @@
+# Example production config pinned to a model GitHub Copilot retires on 2026-12-14.
+# Requires ANTHROPIC_API_KEY in the runner environment (never in the agent's sandbox).
+name: prod-coding-agent
+model:
+  provider: litellm
+  name: anthropic/claude-haiku-4-5
+  pricing: {input_per_mtok: 1.00, output_per_mtok: 5.00}   # verify against your price sheet
+  kwargs: {temperature: 0.0, max_tokens: 4096}
+harness:
+  name: mini-swe-agent
+  version: "2.4.6"
+  config: mini.yaml
+  overrides:
+    agent: {step_limit: 40, cost_limit: 1.0}

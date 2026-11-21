@@ -1,0 +1,8 @@
+id: 08-retry-backoff
+title: Implement a retry decorator with exponential backoff
+tier: full
+tags:
+- feature
+prompt: Implement `retry` in resilience/retry.py as described in its docstring.
+files_of_interest:
+- resilience/retry.py

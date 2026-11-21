@@ -1,0 +1,78 @@
+# Self-tests: unit tests, fixture integrity, and end-to-end gate scenarios with the simulated
+# model on both sandbox backends. Needs no secrets.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ matrix.python }}"}
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: mypy
+      - run: pytest
+      - name: Every fixture fails before and passes with its reference solution
+        run: ugate validate-fixtures
+
+  scenarios:
+    name: Gate scenarios (${{ matrix.sandbox }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sandbox: [local, docker]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -e .
+      - if: matrix.sandbox == 'docker'
+        run: docker build -t ugate-sandbox:latest sandbox/
+      - name: Replay three simulated configurations
+        run: |
+          set -e
+          pids=()
+          for side in baseline candidate-regressed candidate-compatible; do
+            ugate run --agent "configs/sim-$side.yaml" --label "$side" --out "runs/$side" \
+              --trials 3 --sandbox "${{ matrix.sandbox }}" --workers 4 & pids+=($!)
+          done
+          # A second, independent baseline run for the A/A check (the simulated model is seeded,
+          # so this proves determinism; real-model A/A noise is covered by scripts/calibrate.py).
+          ugate run --agent configs/sim-baseline.yaml --label baseline-rerun --out runs/baseline-rerun \
+            --trials 3 --sandbox "${{ matrix.sandbox }}" --workers 4 & pids+=($!)
+          for p in "${pids[@]}"; do wait "$p"; done
+      - name: Assert expected decisions
+        run: |
+          set -u
+          expect() {
+            ugate compare runs/baseline/run.json "runs/$1/run.json" --out "report/$1" > /dev/null
+            got=$(cat "report/$1/decision.txt")
+            echo "$1: $got (expected $2)"
+            [ "$got" = "$2" ]
+          }
+          expect baseline-rerun APPROVE
+          expect candidate-compatible STAGED_ROLLOUT
+          expect candidate-regressed REJECT
+          cat report/candidate-regressed/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the HTML reports in a browser (both widths, both themes)
+        run: |
+          pip install playwright
+          python e2e/test_reports.py report --chrome /usr/bin/google-chrome
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "scenario-reports-${{ matrix.sandbox }}", path: "report\ne2e/screenshots"}

@@ -1,0 +1,9 @@
+id: 05-lru-cache
+title: Implement an LRU cache to spec
+tier: full
+tags:
+- feature
+prompt: Implement `LRUCache` in cachekit/lru.py according to its docstring. It is used by the API gateway,
+  so get/put must be O(1).
+files_of_interest:
+- cachekit/lru.py

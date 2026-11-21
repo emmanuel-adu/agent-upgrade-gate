@@ -1,0 +1,12 @@
+id: 07-config-validation
+title: Validate service configuration with field-specific errors
+tier: full
+tags:
+- feature
+prompt: 'Implement `load_config` in svcconfig/loader.py. Rules: `host` is a required non-empty string;
+  `port` is a required int in 1..65535 (bools are not ints here); `retries` is an optional int >= 0 defaulting
+  to 3; `timeout_s` is an optional number > 0 defaulting to 10.0 and returned as float; any other key
+  is an error. Raise ConfigError whose message names the offending field. Return a new dict containing
+  exactly those four keys.'
+files_of_interest:
+- svcconfig/loader.py

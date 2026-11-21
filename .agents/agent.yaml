@@ -1,0 +1,25 @@
+# The coding-agent configuration this repository runs in production.
+# A pull request that changes this file (model, harness version, harness config) triggers the
+# Agent Upgrade Gate workflow, which replays the fixture suite on the base-branch version and on
+# the PR version and fails the "Agent Upgrade Gate" check if the change regresses.
+#
+# This demo repository uses the simulated provider so the gate runs without API keys.
+# See examples/ for real-provider configs.
+name: prod-coding-agent
+model:
+  provider: sim
+  name: sim/baseline-v1
+  pricing: {input_per_mtok: 1.00, output_per_mtok: 5.00}
+  sim:
+    skill: 0.97
+    explore_steps: [1, 2]
+    verify_steps: [1, 1]
+    verbosity: 1.0
+    ttft_ms: [350, 650]
+    ms_per_output_token: 9
+harness:
+  name: mini-swe-agent
+  version: "2.4.6"
+  config: mini.yaml
+  overrides:
+    agent: {step_limit: 30, cost_limit: 1.0}

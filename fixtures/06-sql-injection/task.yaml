@@ -1,0 +1,10 @@
+id: 06-sql-injection
+title: Parameterize SQL queries flagged by security review
+tier: smoke
+tags:
+- security
+- bugfix
+prompt: Security review flagged SQL injection in store/users.py. Change every query to use parameterized
+  statements. Names containing apostrophes (e.g. O'Brien) must round-trip correctly.
+files_of_interest:
+- store/users.py

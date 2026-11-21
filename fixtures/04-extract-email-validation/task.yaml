@@ -1,0 +1,13 @@
+id: 04-extract-email-validation
+title: Extract shared, consistent email validation
+tier: full
+tags:
+- refactor
+prompt: Email validation is duplicated and inconsistent between `create_user` and `update_email` in accounts/services.py.
+  Create accounts/validation.py with a single `normalize_email(email) -> str` that strips surrounding
+  whitespace, lowercases, and validates (exactly one @, non-empty local part, no whitespace, domain containing
+  a dot and ending in a TLD of at least 2 letters), raising `ValidationError` otherwise. Move `ValidationError`
+  into validation.py (accounts.services.ValidationError must still work) and use normalize_email in both
+  service functions so both store the normalized address.
+files_of_interest:
+- accounts/services.py

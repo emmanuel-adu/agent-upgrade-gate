@@ -1,0 +1,14 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+demo/
+runs/
+report/
+.ugate/
+.env
+.env.*
+!.env.example
+e2e/screenshots/
+e2e/results.json
+dist/

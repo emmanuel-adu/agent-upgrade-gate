@@ -1,0 +1,11 @@
+id: 03-timestamp-parsing
+title: Accept Z suffix, offsets and fractional seconds in webhook timestamps
+tier: full
+tags:
+- bugfix
+prompt: 'Webhook deliveries are failing: `parse_timestamp` in events/timeparse.py crashes on timestamps
+  like `2026-03-01T12:30:00Z`, `2026-03-01T14:30:00+02:00` and ones with fractional seconds. Make it accept
+  these and always return a timezone-aware datetime in UTC. Input without an offset is UTC. Invalid strings
+  must raise ValueError.'
+files_of_interest:
+- events/timeparse.py

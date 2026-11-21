@@ -1,0 +1,253 @@
+# Agent Upgrade Gate: replays the fixture suite against the base-branch agent config and the PR's
+# agent config, compares behaviour, safety, cost and latency, and fails the "Agent Upgrade Gate"
+# check when thresholds are exceeded. Make that check required in branch protection.
+#
+# Trust model: the PR supplies one file, the agent config, read as data and validated
+# (harness/mini_swe.py: validate_untrusted). Everything that runs or judges comes from the base
+# commit or a pinned release: the ugate code, the sandbox image, fixtures, policy and thresholds.
+# The one exception is this workflow file, which GitHub takes from the PR on `pull_request`, so
+# protect .github/ with CODEOWNERS and required code-owner review.
+name: Agent Upgrade Gate
+
+on:
+  # No `paths:` filter: a required check has to report on every PR. Unrelated PRs exit in `plan`.
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      baseline-config: {description: "Baseline agent config path", required: true, default: ".agents/agent.yaml"}
+      candidate-config: {description: "Candidate agent config path", required: true}
+  workflow_call:
+    inputs:
+      agent-config: {type: string, default: ".agents/agent.yaml"}
+      trials: {type: number, default: 5}
+      sandbox: {type: string, default: "docker"}
+      budget-usd: {type: number, default: 10}
+      ugate-spec: {type: string, default: "agent-upgrade-gate @ git+https://github.com/emmanuel-adu/agent-upgrade-gate@v0.1.0"}
+    secrets:
+      ANTHROPIC_API_KEY: {required: false}
+      OPENAI_API_KEY: {required: false}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  AGENT_CONFIG: ${{ inputs.agent-config || '.agents/agent.yaml' }}
+  TRIALS: ${{ inputs.trials || 5 }}
+  SANDBOX: ${{ inputs.sandbox || 'docker' }}
+  BUDGET_USD: ${{ inputs.budget-usd || 10 }}  # per side; past it, remaining episodes error and the gate fails closed
+  UGATE_SPEC: ${{ inputs.ugate-spec || 'agent-upgrade-gate @ git+https://github.com/emmanuel-adu/agent-upgrade-gate@v0.1.0' }}
+  TRUSTED_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      scope: ${{ steps.plan.outputs.scope }}
+      tasks: ${{ steps.plan.outputs.tasks }}
+      reason: ${{ steps.plan.outputs.reason }}
+      baseline-harness: ${{ steps.harness.outputs.baseline }}
+      candidate-harness: ${{ steps.harness.outputs.candidate }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@v4
+        with: {ref: "${{ env.TRUSTED_SHA }}", path: trusted, fetch-depth: 1}
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - name: Install ugate from the trusted side
+        run: |
+          if [ -d trusted/src/upgrade_gate ]; then pip install ./trusted; else pip install "$UGATE_SPEC"; fi
+
+      - name: Collect inputs (agent config from the PR as data; everything else from base)
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          IN_BASELINE: ${{ inputs.baseline-config }}
+          IN_CANDIDATE: ${{ inputs.candidate-config }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ugate/trusted
+          if [ "$EVENT" = "pull_request" ]; then
+            git -C trusted fetch --depth=1 origin "+refs/pull/$PR_NUMBER/head:refs/remotes/pr/head"
+            git -C trusted show "pr/head:$AGENT_CONFIG" > .ugate/candidate.yaml
+            if [ -f "trusted/$AGENT_CONFIG" ]; then
+              cp "trusted/$AGENT_CONFIG" .ugate/baseline.yaml
+            else
+              echo "::notice::No agent config on the base branch yet; comparing the PR's config with itself"
+              cp .ugate/candidate.yaml .ugate/baseline.yaml
+            fi
+          else
+            cp "trusted/$IN_BASELINE" .ugate/baseline.yaml
+            cp "trusted/$IN_CANDIDATE" .ugate/candidate.yaml
+          fi
+          for f in fixtures policy.yaml gate.yaml sandbox; do
+            if [ -e "trusted/$f" ]; then
+              cp -r "trusted/$f" .ugate/trusted/
+            else
+              echo "::warning::$f is missing on the base branch; using the PR's copy, which this PR could have weakened"
+              git -C trusted archive pr/head "$f" | tar -x -C .ugate/trusted
+            fi
+          done
+
+      - id: plan
+        run: ugate plan --base .ugate/baseline.yaml --head .ugate/candidate.yaml --fixtures .ugate/trusted/fixtures --github-output
+
+      - id: harness
+        run: |
+          for side in baseline candidate; do
+            v=$(python -c "import yaml,sys; print((yaml.safe_load(open(sys.argv[1])).get('harness') or {}).get('version') or '')" ".ugate/$side.yaml")
+            if ! [[ "$v" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then echo "::error::harness.version must be a plain version, got '$v'"; exit 1; fi
+            echo "$side=$v" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with: {name: ugate-inputs, path: .ugate/, include-hidden-files: true, retention-days: 7}
+
+  replay:
+    name: Replay (${{ matrix.side }})
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [baseline, candidate]
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.TRUSTED_SHA }}", path: trusted, fetch-depth: 1}
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: actions/download-artifact@v4
+        with: {name: ugate-inputs, path: .ugate}
+
+      # Each side gets its own pinned harness version: a harness upgrade is tested like a model upgrade.
+      - name: Install ugate (trusted) and this side's pinned harness
+        env:
+          HARNESS: ${{ matrix.side == 'baseline' && needs.plan.outputs.baseline-harness || needs.plan.outputs.candidate-harness }}
+        run: |
+          if [ -d trusted/src/upgrade_gate ]; then pip install ./trusted; else pip install "$UGATE_SPEC"; fi
+          pip install "mini-swe-agent==$HARNESS"
+
+      - name: Build the sandbox image (trusted)
+        if: env.SANDBOX == 'docker'
+        run: docker build -t ugate-sandbox:latest .ugate/trusted/sandbox/
+
+      - name: Replay fixtures
+        env:
+          # Provider keys live in the runner process only; agent commands get an allow-listed env.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TASKS: ${{ needs.plan.outputs.tasks }}
+        run: |
+          ugate run --agent ".ugate/${{ matrix.side }}.yaml" --label "${{ matrix.side }}" \
+            --out "runs/${{ matrix.side }}" --fixtures .ugate/trusted/fixtures --policy .ugate/trusted/policy.yaml \
+            --tasks "$TASKS" --trials "$TRIALS" --sandbox "$SANDBOX" --workers 4 --budget-usd "$BUDGET_USD"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "runs-${{ matrix.side }}", path: "runs/${{ matrix.side }}", retention-days: 14}
+
+  gate:
+    # Mark this job's check ("Agent Upgrade Gate") as required in branch protection.
+    name: Agent Upgrade Gate
+    needs: [plan, replay]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    env:
+      # Fork PRs get a read-only token: skip the comment and status, keep the check itself.
+      CAN_WRITE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.TRUSTED_SHA }}", path: trusted, fetch-depth: 1}
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - run: if [ -d trusted/src/upgrade_gate ]; then pip install ./trusted; else pip install "$UGATE_SPEC"; fi
+
+      - name: No behavioural change
+        if: needs.plan.outputs.run != 'true'
+        env:
+          REASON: ${{ needs.plan.outputs.reason }}
+        run: |
+          echo "### Agent Upgrade Gate: skipped ($REASON)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Replay must succeed
+        if: needs.plan.outputs.run == 'true' && needs.replay.result != 'success'
+        run: |
+          echo "::error::Replay did not complete (${{ needs.replay.result }}); failing closed."
+          exit 1
+
+      - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.run == 'true'
+        with: {name: ugate-inputs, path: .ugate}
+      - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.run == 'true'
+        with: {pattern: "runs-*", path: runs}
+
+      - name: Compare and decide
+        id: compare
+        if: needs.plan.outputs.run == 'true'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          ugate compare runs/runs-baseline/run.json runs/runs-candidate/run.json \
+            --gate .ugate/trusted/gate.yaml --out report --run-url "$RUN_URL" --github-summary --fail-on-reject
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          echo "decision=$(cat report/decision.txt 2>/dev/null || echo ERROR)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.compare.outcome == 'success'
+        with: {name: upgrade-gate-report, path: report, retention-days: 30}
+
+      - name: Comment on the pull request
+        if: env.CAN_WRITE == 'true' && steps.compare.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('report/report.md', 'utf8');
+            const marker = '<!-- agent-upgrade-gate -->';
+            const {owner, repo} = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {owner, repo, issue_number});
+            // Only ever edit our own comment, never one that merely quotes the marker.
+            const prev = comments.find(c => c.user && c.user.login === 'github-actions[bot]' && c.body && c.body.includes(marker));
+            if (prev) await github.rest.issues.updateComment({owner, repo, comment_id: prev.id, body});
+            else await github.rest.issues.createComment({owner, repo, issue_number, body});
+
+      - name: Publish decision as a commit status
+        if: env.CAN_WRITE == 'true' && steps.compare.outcome == 'success'
+        uses: actions/github-script@v7
+        env:
+          DECISION: ${{ steps.compare.outputs.decision }}
+        with:
+          script: |
+            const d = process.env.DECISION;
+            const text = {APPROVE: 'approve: all checks within thresholds',
+                          STAGED_ROLLOUT: 'staged rollout: see report for watched metrics',
+                          REJECT: 'reject: upgrade exceeds thresholds'}[d] || 'error: comparison failed';
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha: context.payload.pull_request.head.sha,
+              state: ['APPROVE', 'STAGED_ROLLOUT'].includes(d) ? 'success' : 'failure',
+              context: 'agent-upgrade-gate/decision', description: text.slice(0, 140),
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+
+      - name: Enforce decision
+        if: steps.compare.outcome == 'success' && steps.compare.outputs.exit != '0'
+        env:
+          DECISION: ${{ steps.compare.outputs.decision }}
+        run: |
+          echo "::error::Agent Upgrade Gate decision: $DECISION"
+          exit 1

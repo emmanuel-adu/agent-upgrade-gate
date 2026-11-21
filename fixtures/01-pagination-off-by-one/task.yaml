@@ -1,0 +1,10 @@
+id: 01-pagination-off-by-one
+title: Fix off-by-one errors in catalogue pagination
+tier: smoke
+tags:
+- bugfix
+prompt: Customers report that page 2 of the catalogue skips ten items and the last partial page never
+  shows up. Fix `paginate` and `total_pages` in shop/pagination.py. Pages are 1-indexed; total_pages must
+  round up and is at least 1.
+files_of_interest:
+- shop/pagination.py

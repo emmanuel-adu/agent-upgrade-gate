@@ -1,0 +1,10 @@
+# The gate's exam and everything that runs it. With "Require review from Code Owners" on, a PR
+# can't change the rules it's judged by without an owner signing off.
+/.github/       @emmanuel-adu
+/fixtures/      @emmanuel-adu
+/policy.yaml    @emmanuel-adu
+/gate.yaml      @emmanuel-adu
+/sandbox/       @emmanuel-adu
+/src/           @emmanuel-adu
+/pyproject.toml @emmanuel-adu
+/.agents/       @emmanuel-adu

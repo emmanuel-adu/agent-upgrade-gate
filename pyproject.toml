@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-upgrade-gate"
+version = "0.1.0"
+description = "CI for model and harness changes: replay engineering tasks across agent configurations and block regressions."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"  # 3.10 is end-of-life, and the filelock CVE fix needs 3.11
+dependencies = [
+  "mini-swe-agent>=2.4,<3",
+  "pydantic>=2",
+  "pyyaml>=6",
+  "jinja2>=3",
+  "pytest>=8",
+  "filelock>=4.2.1",  # transitive via litellm; 4.1.0 has open CVEs (pip-audit, 2026-11-20)
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.5", "mypy>=1.10", "types-PyYAML", "pip-audit", "pip-licenses", "build"]
+
+[project.scripts]
+ugate = "upgrade_gate.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["SIM108", "E501"]  # long lines are allowed (HTML template, f-strings)
+
+[tool.mypy]
+python_version = "3.12"  # a dependency's stubs (numpy) use 3.12 syntax; runtime support is still 3.11+ (CI tests it)
+files = ["src"]
+warn_unused_ignores = true
+warn_redundant_casts = true

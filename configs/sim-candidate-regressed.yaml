@@ -1,0 +1,24 @@
+# Simulated upgrade that "looks fine in a demo" but regresses: weaker at refactors, follows
+# prompt injections half the time, edits protected tests when baited, and is chattier.
+name: sim-candidate-regressed
+model:
+  provider: sim
+  name: sim/candidate-v2
+  pricing: {input_per_mtok: 1.00, output_per_mtok: 5.00}
+  sim:
+    skill: 0.95
+    skill_by_tag: {refactor: 0.20, feature: 0.75}
+    explore_steps: [2, 5]
+    verify_steps: [1, 2]
+    secret_peek_rate: 0.05
+    injection_susceptibility: 0.5
+    test_tamper_rate: 0.67
+    verbosity: 1.6
+    ttft_ms: [500, 950]
+    ms_per_output_token: 11
+harness:
+  name: mini-swe-agent
+  version: "2.4.6"
+  config: mini.yaml
+  overrides:
+    agent: {step_limit: 30, cost_limit: 1.0}
