@@ -2,28 +2,94 @@
 
 ## Components and data flow
 
-```
-                    PR changes .agents/agent.yaml
-                                 │
-          ┌──────────────────────┴──────────────────────┐
-          │ plan (checkout of the base commit only)      │
-          │  ugate installed from base (or pinned tag)   │
-          │  baseline.yaml ← base:.agents/agent.yaml     │
-          │  candidate.yaml ← PR head, read as data      │
-          │  fixtures, policy, gate, sandbox ← base      │
-          │  ugate plan → run? tasks?                    │
-          └──────────────────────┬──────────────────────┘
-                 ┌───────────────┴───────────────┐
-        replay (baseline)                 replay (candidate)
-        pip install mini-swe-agent==A     pip install mini-swe-agent==B
-        ugate run → run.json + trajs      ugate run → run.json + trajs
-                 └───────────────┬───────────────┘
-                     gate: ugate compare
-           comparison.json · report.md · report.html
-        PR comment · commit status · required check (exit 1 on REJECT)
+The pipeline a PR goes through (`.github/workflows/agent-upgrade-gate.yml`):
+
+```mermaid
+flowchart TB
+    pr(["PR changes .agents/agent.yaml"])
+
+    subgraph plan["Plan · runs the base commit's code"]
+        direction TB
+        cfg["Candidate config<br/>from the PR, read as data<br/>and allow-listed"]
+        base["From the base branch:<br/>baseline config, fixtures,<br/>policy, thresholds,<br/>sandbox image"]
+        sel{"Behaviour<br/>changed?"}
+    end
+
+    subgraph replay["Replay · one job per side, each with its own pinned harness"]
+        direction LR
+        rb["Baseline<br/>10 tasks × 5 trials"]
+        rc["Candidate<br/>10 tasks × 5 trials"]
+    end
+
+    cmp["Compare<br/>completion · safety · cost<br/>latency · tool use"]
+
+    pr --> cfg --> sel
+    base --> sel
+    sel -- "no: name or price only" --> skip(["Check passes,<br/>nothing replayed"])
+    sel -- yes --> replay
+    replay --> cmp
+    cmp -- "any check fails" --> rej(["Reject<br/>the required check fails"])
+    cmp -- "any check warns" --> stg(["Staged rollout<br/>check passes, rollout plan"])
+    cmp -- "all pass" --> ok(["Approve"])
+
+    classDef untrusted stroke:#d97706,stroke-width:2px,stroke-dasharray:5 3
+    classDef trusted stroke:#2563eb,stroke-width:2px
+    classDef bad stroke:#dc2626,stroke-width:2px
+    classDef warn stroke:#d97706,stroke-width:2px
+    classDef good stroke:#16a34a,stroke-width:2px
+    class cfg untrusted
+    class base trusted
+    class rej bad
+    class stg warn
+    class ok good
 ```
 
-Inside one episode (`runner.run_episode`):
+<sub>Dashed orange: untrusted input from the PR. Solid blue: trusted, from the base branch.</sub>
+
+What happens in one episode, one task attempt by one config:
+
+```mermaid
+flowchart TB
+    llm(["Model provider"])
+
+    subgraph runner["ugate process · the only place the API key exists"]
+        direction TB
+        model["Model wrapper<br/>tokens · cost · latency<br/>run budget"]
+        agent["mini-swe-agent loop"]
+        screen{"Policy<br/>screen"}
+        out["Canary screen<br/>redacts plain · base64 · hex"]
+    end
+
+    subgraph sandbox["Sandbox · no network · fake secrets · non-root"]
+        direction TB
+        ws["Workspace<br/>copy of the fixture repo"]
+        guard["Guarded files<br/>tests · conftest · pyproject<br/>hashed after every step"]
+    end
+
+    subgraph verify["Verification · clean copy of the workspace"]
+        direction TB
+        copy["Drop escaping symlinks,<br/>restore tests and config"]
+        pytest["Isolated pytest, no conftest<br/>JUnit count must match<br/>the reference solution"]
+    end
+
+    rec[("run.json<br/>every call, command,<br/>violation and verdict")]
+
+    llm <--> model <--> agent
+    agent -- "bash command" --> screen
+    screen -- "blocked,<br/>counted as a violation" --> agent
+    screen -- allowed --> ws
+    ws -- output --> out
+    out -- "back to the model" --> agent
+    ws -.- guard
+    ws -- "on submit" --> copy --> pytest --> rec
+
+    classDef untrusted stroke:#d97706,stroke-width:2px,stroke-dasharray:5 3
+    class llm,ws untrusted
+```
+
+<sub>Dashed orange: untrusted (model output and anything the agent writes). Only the ugate process holds the API key.</sub>
+
+The same episode as code (`runner.run_episode`):
 
 ```
 validate_untrusted(config)       allow-listed kwargs, model class, built-in harness config, no dunder templates
