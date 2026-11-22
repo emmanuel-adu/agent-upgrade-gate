@@ -6,7 +6,9 @@ Model providers retire models on their own schedule, and every model or harness 
 
 I ran it on a real upgrade, Claude Haiku 4.5 to Haiku 5.5, and wrote up what it caught: [The new model was better and 30x cheaper. My CI still blocked it.](https://medium.com/@emmanueladu_97578/the-new-model-was-better-and-30x-cheaper-my-ci-still-blocked-it-3583c2a48cd6)
 
-![Sample report: a simulated upgrade gets rejected](docs/images/report-desktop.png)
+![Report for a real upgrade from Claude Haiku 4.5 to Haiku 5.5: rejected for 6 critical and 34 new medium policy violations, even though completion rose to 100% and cost fell 97%](docs/images/report-haiku-4-5-to-5-5.png)
+
+<sub>The first live run. The quick start below makes the same report for a simulated upgrade, no API key needed.</sub>
 
 ## Why I built it
 
