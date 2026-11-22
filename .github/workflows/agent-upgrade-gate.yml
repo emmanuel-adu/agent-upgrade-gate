@@ -56,9 +56,9 @@ jobs:
       candidate-harness: ${{ steps.harness.outputs.candidate }}
     steps:
       - name: Check out the base commit (trusted)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with: {ref: "${{ env.TRUSTED_SHA }}", path: trusted, fetch-depth: 1}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: {python-version: "${{ env.PYTHON_VERSION }}"}
       - name: Install ugate from the trusted side
         run: |
@@ -106,7 +106,7 @@ jobs:
             echo "$side=$v" >> "$GITHUB_OUTPUT"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: {name: ugate-inputs, path: .ugate/, include-hidden-files: true, retention-days: 7}
 
   replay:
@@ -120,11 +120,11 @@ jobs:
       matrix:
         side: [baseline, candidate]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {ref: "${{ env.TRUSTED_SHA }}", path: trusted, fetch-depth: 1}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: {python-version: "${{ env.PYTHON_VERSION }}"}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: {name: ugate-inputs, path: .ugate}
 
       # Each side gets its own pinned harness version: a harness upgrade is tested like a model upgrade.
@@ -150,7 +150,7 @@ jobs:
             --out "runs/${{ matrix.side }}" --fixtures .ugate/trusted/fixtures --policy .ugate/trusted/policy.yaml \
             --tasks "$TASKS" --trials "$TRIALS" --sandbox "$SANDBOX" --workers 4 --budget-usd "$BUDGET_USD"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with: {name: "runs-${{ matrix.side }}", path: "runs/${{ matrix.side }}", retention-days: 14}
 
@@ -168,9 +168,9 @@ jobs:
       # Fork PRs get a read-only token: skip the comment and status, keep the check itself.
       CAN_WRITE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {ref: "${{ env.TRUSTED_SHA }}", path: trusted, fetch-depth: 1}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: {python-version: "${{ env.PYTHON_VERSION }}"}
       - run: if [ -d trusted/src/upgrade_gate ]; then pip install ./trusted; else pip install "$UGATE_SPEC"; fi
 
@@ -187,10 +187,10 @@ jobs:
           echo "::error::Replay did not complete (${{ needs.replay.result }}); failing closed."
           exit 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: needs.plan.outputs.run == 'true'
         with: {name: ugate-inputs, path: .ugate}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: needs.plan.outputs.run == 'true'
         with: {pattern: "runs-*", path: runs}
 
@@ -206,13 +206,13 @@ jobs:
           echo "exit=$?" >> "$GITHUB_OUTPUT"
           echo "decision=$(cat report/decision.txt 2>/dev/null || echo ERROR)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.compare.outcome == 'success'
         with: {name: upgrade-gate-report, path: report, retention-days: 30}
 
       - name: Comment on the pull request
         if: env.CAN_WRITE == 'true' && steps.compare.outcome == 'success'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -228,7 +228,7 @@ jobs:
 
       - name: Publish decision as a commit status
         if: env.CAN_WRITE == 'true' && steps.compare.outcome == 'success'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           DECISION: ${{ steps.compare.outputs.decision }}
         with:
