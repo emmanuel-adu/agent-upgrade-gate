@@ -171,66 +171,169 @@ def canary_forms(canary: str) -> tuple[str, ...]:
 # Tool-call taxonomy (used for behavioural drift, independent of policy)
 # ---------------------------------------------------------------------------------------------
 
-_CATEGORIES: list[tuple[str, re.Pattern]] = [
-    ("submit", re.compile(r"COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT")),
-    ("test", re.compile(r"\b(pytest|unittest|tox|nox)\b|make\s+test")),
-    ("edit", re.compile(r"(cat|tee)\s+(<<|>)|<<\s*'?EOF|sed\s+-i|\bpatch\b|git\s+apply|>\s*\S+\.\w+|\bmv\b|\bcp\b")),
-    ("network", re.compile(r"(^|[\s;&|(])(curl|wget|nc|ssh|scp)(\s|$)")),
-    ("install", re.compile(r"\b(pip3?|npm|yarn|apt-get|apt)\s+(install|add)\b")),
-    ("vcs", re.compile(r"^\s*git\b")),
-    ("search", re.compile(r"^\s*(grep|rg|find|ls|tree|fd|ag)\b")),
-    ("read", re.compile(r"^\s*(cat|head|tail|nl|less|more|wc)\b|sed\s+-n")),
-    ("execute", re.compile(r"^\s*(python[0-9.]*|bash|sh|node|make)\b")),
-]
+# A call takes the highest-ranked category of any command in it: `cd x && cat a.py` is a read.
+_RANK = ("submit", "test", "edit", "network", "install", "execute", "vcs", "search", "read")
+_BIN_CATEGORY = {
+    **dict.fromkeys(("pytest", "tox", "nox"), "test"),
+    **dict.fromkeys(("patch", "mv", "cp", "tee", "rm", "mkdir", "touch"), "edit"),
+    **dict.fromkeys(("curl", "wget", "nc", "ssh", "scp"), "network"),
+    **dict.fromkeys(("bash", "sh", "node", "make"), "execute"),
+    "git": "vcs",
+    **dict.fromkeys(("grep", "rg", "find", "ls", "tree", "fd", "ag"), "search"),
+    **dict.fromkeys(("cat", "head", "tail", "nl", "less", "more", "wc", "sed"), "read"),
+}
+_PY_WRITES = re.compile(r"open\([^)]*,\s*['\"][wax]|\.write_(text|bytes)\(|shutil\.(copy|move)|os\.(rename|replace|remove)\(")
+_REDIRECT = re.compile(r"^[0-9]*(>>?|<<?|&>>?|>&|<&|>\|)")
+_SHELL_KEYWORDS = {"if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"}
+_SHELL_CLOSERS = {"fi", "done", "esac", "}"}
+_SHELL_HEADERS = {"for", "case", "select", "function"}  # the rest of the segment is not a command
+_COMMAND_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]*$")
 
 
 def categorize(command: str) -> str:
-    for name, pat in _CATEGORIES:
-        if pat.search(command):
-            return name
-    return "other"
+    if "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in command:
+        return "submit"
+    tagged, writes = _heredoc_scan(command)
+    programs = "\n".join(line for line, role in tagged if role == "program")
+    found = {c for raw, words in _commands(command) if (c := _segment_category(raw, words, programs))}
+    if any(writes):
+        found.add("edit")
+    return next((c for c in _RANK if c in found), "other")
+
+
+def _segment_category(raw: str, words: list[str], programs: str) -> str | None:
+    at = _command_index(words)
+    if at is None:
+        return None
+    name, args = os.path.basename(words[at]), words[at + 1 :]
+    if _writes_to_file(raw):
+        return "edit"
+    if re.fullmatch(r"python[0-9.]*", name):
+        if any(a == "-m" and b in ("pytest", "unittest") for a, b in zip(args, args[1:], strict=False)):
+            return "test"
+        # The program is the -c argument or a heredoc body fed to a command.
+        return "edit" if _PY_WRITES.search(" ".join(args) + "\n" + programs) else "execute"
+    if name in ("pip", "pip3", "npm", "yarn", "apt", "apt-get") and args[:1] and args[0] in ("install", "add"):
+        return "install"
+    if name == "make" and "test" in args:
+        return "test"
+    if name == "git" and args[:1] == ["apply"]:
+        return "edit"
+    if name in ("sed", "perl") and any(a.startswith(("-i", "-pi")) for a in args):
+        return "edit"
+    return _BIN_CATEGORY.get(name)
+
+
+_QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+_OUTPUT_REDIRECT = re.compile(r"(?:^|\s)(?:[0-9]*|&)>>?\|?\s*([^\s<>]+)")
+
+
+def _writes_to_file(raw: str) -> bool:
+    """The segment redirects output (`>`, `>>`, `1>`, `&>`) to a file, not /dev/* or a descriptor.
+    Quoted text is blanked first, so `grep ">" a.py` is not a redirect but `> "out file"` still is."""
+    unquoted = _QUOTED.sub("''", raw)
+    return any(not t.startswith(("/dev/", "&")) for t in _OUTPUT_REDIRECT.findall(unquoted))
 
 
 def binaries(command: str) -> list[str]:
-    """First word of each pipeline/list segment, e.g. 'cd x && python -m pytest | tail' -> cd, python, tail."""
-    out = []
-    for seg in _split_segments(strip_heredoc_bodies(command).split("<<", 1)[0]):
-        seg = seg.strip().lstrip("(")
+    """Command run by each pipeline/list segment, e.g. 'cd x && python -m pytest | tail' -> cd, python,
+    tail. Shell keywords, redirections, assignments and heredoc bodies are not commands."""
+    return [os.path.basename(words[at]) for _, words in _commands(command) if (at := _command_index(words)) is not None]
+
+
+def _command_index(words: list[str]) -> int | None:
+    """Index of the command word, past leading assignments and redirections; None if there is none or
+    it doesn't look like a command name (`[`, an empty string, a fragment of a quoted argument)."""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w):
+            i += 1
+        elif m := _REDIRECT.match(w):
+            i += 1 if w[m.end() :] else 2
+        else:
+            return i if _COMMAND_NAME.match(os.path.basename(w)) else None
+    return None
+
+
+def _commands(command: str) -> list[tuple[str, list[str]]]:
+    """(raw text, words) of each simple command, with shell keywords stripped from the words and
+    heredoc bodies removed."""
+    out: list[tuple[str, list[str]]] = []
+    for seg in _split_segments(strip_heredoc_bodies(command, all_bodies=True)):
         try:
             words = shlex.split(seg)
         except ValueError:
             words = seg.split()
-        while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+        while words and words[0] in _SHELL_KEYWORDS | _SHELL_CLOSERS:
             words = words[1:]
-        if words:
-            out.append(os.path.basename(words[0]))
+        if words and words[0] not in _SHELL_HEADERS:
+            out.append((seg, words))
     return out
 
 
 def _split_segments(command: str) -> list[str]:
-    """Split on |, ||, &&, ; and newlines outside of quotes."""
-    segs, cur, quote, i = [], [], None, 0
-    while i < len(command):
+    """Split on |, ||, &&, ;, &, newlines and subshell parens outside quotes. Backslash escapes and
+    comments follow bash; `$(...)` stays inside its word."""
+    segs: list[str] = []
+    cur: list[str] = []
+    quote: str | None = None
+    i, n = 0, len(command)
+    while i < n:
         ch = command[i]
-        if quote:
+        if quote == "'":
             cur.append(ch)
-            if ch == quote:
-                quote = None
+            quote = None if ch == "'" else quote
+        elif ch == "\\" and quote != "'":
+            cur.append(" " if command[i + 1 : i + 2] == "\n" and not quote else command[i : i + 2])
+            i += 1
+        elif quote == '"':
+            cur.append(ch)
+            quote = None if ch == '"' else quote
         elif ch in "'\"":
             quote = ch
             cur.append(ch)
+        elif ch == "#" and (not cur or cur[-1].isspace()):
+            while i + 1 < n and command[i + 1] != "\n":
+                i += 1
+        elif ch == "$" and command[i + 1 : i + 2] == "(":
+            end = _matching_paren(command, i + 1)
+            cur.append(command[i:end])
+            i = end - 1
         elif ch == "&" and (command[i - 1 : i] in (">", "<") or command[i + 1 : i + 2] == ">"):
             cur.append(ch)  # redirections like 2>&1, &>file
-        elif ch in "|;&\n":
+        elif ch in "|;&\n()":
             segs.append("".join(cur))
             cur = []
-            if command[i : i + 2] in ("||", "&&"):
+            if command[i : i + 2] in ("||", "&&", ";;"):
                 i += 1
         else:
             cur.append(ch)
         i += 1
     segs.append("".join(cur))
     return [s for s in segs if s.strip()]
+
+
+def _matching_paren(command: str, open_at: int) -> int:
+    """Index just past the `)` closing the `(` at open_at (quote-aware), or len(command)."""
+    depth, quote, i = 0, None, open_at
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return len(command)
 
 
 _SEPARATORS = {";", "&&", "||", "|", "&", "(", ")", "\n"}
@@ -274,25 +377,32 @@ def _writes_file(segment: list[str]) -> bool:
     return words[0].endswith("tee") or any(t in (">", ">>") or t.startswith((">", ">>")) for t in segment[1:])
 
 
-def strip_heredoc_bodies(command: str) -> str:
-    """Remove heredoc bodies that are file content, keep everything that runs."""
+def strip_heredoc_bodies(command: str, *, all_bodies: bool = False) -> str:
+    """Remove heredoc bodies that are file content, keep everything that runs. With all_bodies, also
+    drop bodies fed to programs (`python - <<EOF`) and terminators: only the typed shell is left."""
+    drop = {"content", "program", "end"} if all_bodies else {"content"}
+    return "\n".join(line for line, role in _heredoc_scan(command)[0] if role not in drop)
+
+
+def _heredoc_scan(command: str) -> tuple[list[tuple[str, str]], list[bool]]:
+    """Each line tagged 'shell', 'content' (file body), 'program' (body fed to a command) or 'end',
+    plus whether each heredoc writes a file."""
     lines = command.split("\n")
-    out, i = [], 0
+    tagged: list[tuple[str, str]] = []
+    writes: list[bool] = []
+    i = 0
     while i < len(lines):
-        line = lines[i]
-        out.append(line)
+        tagged.append((lines[i], "shell"))
         i += 1
-        for delim, is_content in _heredocs(line):
-            body: list[str] = []
+        for delim, is_content in _heredocs(tagged[-1][0]):
+            writes.append(is_content)
             while i < len(lines) and lines[i].strip() != delim:
-                body.append(lines[i])
+                tagged.append((lines[i], "content" if is_content else "program"))
                 i += 1
-            if not is_content:
-                out.extend(body)
             if i < len(lines):
-                out.append(lines[i])  # the terminator line
+                tagged.append((lines[i], "end"))
                 i += 1
-    return "\n".join(out)
+    return tagged, writes
 
 
 def _snippet(command: str, at: int, width: int = 120) -> str:
