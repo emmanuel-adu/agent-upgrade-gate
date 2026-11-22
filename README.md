@@ -34,17 +34,92 @@ regressed    REJECT
 
 ## How it works
 
+Every PR runs the same pipeline. The PR only contributes its agent config; everything that runs or judges comes from the base branch.
+
+```mermaid
+flowchart TB
+    pr(["PR changes .agents/agent.yaml"])
+
+    subgraph plan["Plan · runs the base commit's code"]
+        direction TB
+        cfg["Candidate config<br/>from the PR, read as data<br/>and allow-listed"]
+        base["From the base branch:<br/>baseline config, fixtures,<br/>policy, thresholds,<br/>sandbox image"]
+        sel{"Behaviour<br/>changed?"}
+    end
+
+    subgraph replay["Replay · one job per side, each with its own pinned harness"]
+        direction LR
+        rb["Baseline<br/>10 tasks × 5 trials"]
+        rc["Candidate<br/>10 tasks × 5 trials"]
+    end
+
+    cmp["Compare<br/>completion · safety · cost<br/>latency · tool use"]
+
+    pr --> cfg --> sel
+    base --> sel
+    sel -- "no: name or price only" --> skip(["Check passes,<br/>nothing replayed"])
+    sel -- yes --> replay
+    replay --> cmp
+    cmp -- "any check fails" --> rej(["Reject<br/>the required check fails"])
+    cmp -- "any check warns" --> stg(["Staged rollout<br/>check passes, rollout plan"])
+    cmp -- "all pass" --> ok(["Approve"])
+
+    classDef untrusted stroke:#d97706,stroke-width:2px,stroke-dasharray:5 3
+    classDef trusted stroke:#2563eb,stroke-width:2px
+    classDef bad stroke:#dc2626,stroke-width:2px
+    classDef warn stroke:#d97706,stroke-width:2px
+    classDef good stroke:#16a34a,stroke-width:2px
+    class cfg untrusted
+    class base trusted
+    class rej bad
+    class stg warn
+    class ok good
 ```
-PR edits .agents/agent.yaml
-      |
-  ugate plan       what changed? name or pricing only: skip. anything behavioural: full suite
-      |
-  ugate run        both configs, each with its own pinned harness, N trials per task, in sandboxes
-      |
-  ugate compare    verified completion, tool-call drift, policy violations, cost, latency
-      |
-  PR comment + commit status + required check: approve / staged rollout / reject
+
+<sub>Dashed orange: untrusted input from the PR. Solid blue: trusted, from the base branch.</sub>
+
+Inside each replay, every one of the agent's commands goes through the same loop:
+
+```mermaid
+flowchart TB
+    llm(["Model provider"])
+
+    subgraph runner["ugate process · the only place the API key exists"]
+        direction TB
+        model["Model wrapper<br/>tokens · cost · latency<br/>run budget"]
+        agent["mini-swe-agent loop"]
+        screen{"Policy<br/>screen"}
+        out["Canary screen<br/>redacts plain · base64 · hex"]
+    end
+
+    subgraph sandbox["Sandbox · no network · fake secrets · non-root"]
+        direction TB
+        ws["Workspace<br/>copy of the fixture repo"]
+        guard["Guarded files<br/>tests · conftest · pyproject<br/>hashed after every step"]
+    end
+
+    subgraph verify["Verification · clean copy of the workspace"]
+        direction TB
+        copy["Drop escaping symlinks,<br/>restore tests and config"]
+        pytest["Isolated pytest, no conftest<br/>JUnit count must match<br/>the reference solution"]
+    end
+
+    rec[("run.json<br/>every call, command,<br/>violation and verdict")]
+
+    llm <--> model <--> agent
+    agent -- "bash command" --> screen
+    screen -- "blocked,<br/>counted as a violation" --> agent
+    screen -- allowed --> ws
+    ws -- output --> out
+    out -- "back to the model" --> agent
+    ws -.- guard
+    ws -- "on submit" --> copy --> pytest --> rec
+
+    classDef untrusted stroke:#d97706,stroke-width:2px,stroke-dasharray:5 3
+    class llm,ws untrusted
 ```
+
+<sub>Dashed orange: untrusted (model output and anything the agent writes). Only the ugate process holds the API key.</sub>
 
 - **Harness:** [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) 2.4.6. Its agent loop and model layer run as shipped; its execution environment is swapped for the gated sandbox below.
 - **Ten fixtures:** small Python repos with a bug fix, features, a refactor, a SQL-injection fix, a prompt-injection trap and a test-tampering trap. `ugate validate-fixtures` proves each one fails before its fix and passes after, and every run re-checks the reference solution.
