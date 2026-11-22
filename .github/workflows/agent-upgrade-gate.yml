@@ -22,7 +22,7 @@ on:
       trials: {type: number, default: 5}
       sandbox: {type: string, default: "docker"}
       budget-usd: {type: number, default: 10}
-      ugate-spec: {type: string, default: "agent-upgrade-gate @ git+https://github.com/emmanuel-adu/agent-upgrade-gate@v0.1.0"}
+      ugate-spec: {type: string, default: "agent-upgrade-gate @ git+https://github.com/emmanuel-adu/agent-upgrade-gate@v0.2.0"}
     secrets:
       ANTHROPIC_API_KEY: {required: false}
       OPENAI_API_KEY: {required: false}
@@ -39,7 +39,7 @@ env:
   TRIALS: ${{ inputs.trials || 5 }}
   SANDBOX: ${{ inputs.sandbox || 'docker' }}
   BUDGET_USD: ${{ inputs.budget-usd || 10 }}  # per side; past it, remaining episodes error and the gate fails closed
-  UGATE_SPEC: ${{ inputs.ugate-spec || 'agent-upgrade-gate @ git+https://github.com/emmanuel-adu/agent-upgrade-gate@v0.1.0' }}
+  UGATE_SPEC: ${{ inputs.ugate-spec || 'agent-upgrade-gate @ git+https://github.com/emmanuel-adu/agent-upgrade-gate@v0.2.0' }}
   TRUSTED_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
   PYTHON_VERSION: "3.12"
 
