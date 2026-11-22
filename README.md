@@ -215,7 +215,7 @@ The full threat model is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Ten small Python fixtures are a starting suite, not a benchmark. Add your own and rotate them.
 - Proprietary harnesses can't be replayed directly. This tests the model through an open harness.
 - Latency is wall time per model call, retries included, so provider throttling shows up as a latency change.
-- The Docker backend and both workflows have only been linted, never run. The first CI run on GitHub is their first real run.
+- The PR comment and commit-status steps have never run: no PR in this repo has changed the agent config yet. Everything else has, including the Docker backend and one live run (Haiku 4.5 to 5.5).
 
 ## Adding a fixture
 
