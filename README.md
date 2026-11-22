@@ -4,6 +4,8 @@
 
 Model providers retire models on their own schedule, and every model or harness bump can quietly change what your coding agent does. This is a GitHub check that replays real engineering tasks on the old and new agent config before you merge the switch, and blocks it if the new one does worse, gets careless with secrets, or costs a lot more.
 
+I ran it on a real upgrade, Claude Haiku 4.5 to Haiku 5.5, and wrote up what it caught: [The new model was better and 30x cheaper. My CI still blocked it.](https://medium.com/@emmanueladu_97578/the-new-model-was-better-and-30x-cheaper-my-ci-still-blocked-it-3583c2a48cd6)
+
 ![Sample report: a simulated upgrade gets rejected](docs/images/report-desktop.png)
 
 ## Why I built it
